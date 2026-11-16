@@ -57,7 +57,899 @@ footer {
     <h3>Projeto Lua #01</h3>
     <p>Projeto de programação Lua.</p>
     <button onclick="copiar()">COPIAR CÓDIGO</button>
-    <textarea id="codigo" hidden>-- Insira aqui seu código Lua legítimo</textarea>
+    <textarea id="codigo" hidden>--=====================================================================
+--  RNG Scroll Attacks :: Hub v6.1 (PC + MOBILE) | Preto/vermelho
+--  Abas: MAIN | AIMBOT | HITBOX | MOVE | ROLÊ
+--  AIM arrastável | Anti-fling 3 camadas | Aviso da próxima skill
+--  Z = mirar | T = trava mira | RightShift = painel
+--=====================================================================
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local UIS          = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local VirtualUser  = game:GetService("VirtualUser")
+local WS           = game:GetService("Workspace")
+
+local LP = Players.LocalPlayer
+assert(LP, "LocalPlayer não encontrado")
+local PG       = LP:WaitForChild("PlayerGui")
+local IS_TOUCH = UIS.TouchEnabled
+local unpack   = table.unpack or unpack
+
+--======================= CONFIGURAÇÃO ================================
+local CFG = {
+	Aimbot = {
+		Enabled      = true,  HardLock = true,
+		StickyTarget = true,  StickyRange = 3000,
+		FaceAim      = true,  StopOnAim = false,
+		RequireHold  = false, HoldKey = "Z", ToggleKey = "T",
+		FOV = 180, MaxDistance = 600, AimPart = "Head",
+		Smoothing = 0, Prediction = 0.08,
+		WallCheck = false, TeamCheck = false, FriendCheck = false,
+		ForceCamera = true, AutoShoot = false, FireMode = "Both",
+		ShootDelay = {0.08, 0.18},
+	},
+	Hitbox = { Targets = true, Self = false, Scale = 2.5, OnlyWhenAiming = false },
+	Misc = {
+		WalkSpeedOn = false, WalkSpeed = 60,
+		NoKnockback = false, HardAntiFling = true, AnchorOnFling = true,
+		MaxSafeVel  = 90,
+	},
+	Roll  = { AlertEnabled = true, SoundAlert = true, NotifTime = 4 },
+	AntiBan = {
+		Enabled = true, AntiAFK = true, StaffDetect = true,
+		StaffList = {"Roblox", "Nightgaladeld", "MrDoombringer"},
+	},
+	UI = {
+		Accent  = Color3.fromRGB(225, 30, 45),
+		Bg      = Color3.fromRGB(8, 8, 8),
+		Row     = Color3.fromRGB(19, 17, 18),
+		RowAlt  = Color3.fromRGB(30, 8, 11),
+		Header  = Color3.fromRGB(28, 6, 10),
+		Text    = Color3.fromRGB(242, 236, 236),
+		TextDim = Color3.fromRGB(175, 150, 150),
+	},
+}
+
+local State = {
+	aimHeld = false, aimToggle = false, aimActive = false,
+	lockedPlayer = nil, targetName = "-", targetDist = 0,
+	staff = nil, conns = {},
+	nextAbility = "-", rollAlert = false,
+}
+
+local ENEMY_PARTS = {"HumanoidRootPart","Head","UpperTorso","LowerTorso","Torso",
+	"LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm",
+	"LeftUpperLeg","RightUpperLeg","LeftHand","RightHand","LeftFoot","RightFoot"}
+local SELF_PARTS  = {"Head","UpperTorso","Torso","LeftHand","RightHand","LeftUpperArm","RightUpperArm"}
+
+--===================== HITBOX ========================================
+local Store = setmetatable({}, {__mode = "k"})
+local function scalePart(part, scale)
+	local d = Store[part]
+	if not d then
+		d = {Size = part.Size, CanCollide = part.CanCollide}
+		Store[part] = d
+		d.Conn = part:GetPropertyChangedSignal("Size"):Connect(function()
+			local cur = Store[part]
+			if cur and cur.Want and part.Size ~= cur.Size * cur.Want then
+				part.Size = cur.Size * cur.Want
+			end
+		end)
+	end
+	d.Want = scale
+	part.Size = d.Size * scale
+	part.CanCollide = false
+end
+local function restorePart(part)
+	local d = Store[part]
+	if d then
+		d.Want = nil
+		part.Size = d.Size
+		part.CanCollide = d.CanCollide
+		if d.Conn then d.Conn:Disconnect() end
+		Store[part] = nil
+	end
+end
+
+RunService.Heartbeat:Connect(function()
+	local on = CFG.Hitbox.Targets and CFG.Hitbox.Scale > 1.001
+		and (not CFG.Hitbox.OnlyWhenAiming or State.aimActive)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local char = plr.Character
+		if plr ~= LP and char then
+			for _, n in ipairs(ENEMY_PARTS) do
+				local p = char:FindFirstChild(n)
+				if p and p:IsA("BasePart") then
+					if on then scalePart(p, CFG.Hitbox.Scale) else restorePart(p) end
+				end
+			end
+		end
+	end
+	local me = LP.Character
+	if me then
+		for _, n in ipairs(SELF_PARTS) do
+			local p = me:FindFirstChild(n)
+			if p and p:IsA("BasePart") then
+				if CFG.Hitbox.Self then scalePart(p, CFG.Hitbox.Scale) else restorePart(p) end
+			end
+		end
+	end
+end)
+
+--============ WALKSPEED + ANTI-FLING =================================
+local flingUntil, anchorUntil = 0, 0
+
+local function antiFlingTick(hum, hrp)
+	local v   = hrp.AssemblyLinearVelocity
+	local now = os.clock()
+
+	if CFG.Misc.AnchorOnFling and now < anchorUntil then
+		hrp.Anchored = true
+		if now >= anchorUntil - 0.02 then
+			hrp.Anchored = false
+			hrp.AssemblyLinearVelocity = Vector3.zero
+		end
+		return
+	end
+
+	local flat = Vector3.new(v.X, 0, v.Z).Magnitude
+	local vert = math.abs(v.Y)
+
+	if flat > CFG.Misc.MaxSafeVel or vert > CFG.Misc.MaxSafeVel then
+		if CFG.Misc.HardAntiFling then
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			flingUntil = now + 0.12
+			if CFG.Misc.AnchorOnFling and (flat > CFG.Misc.MaxSafeVel * 2 or vert > CFG.Misc.MaxSafeVel * 2) then
+				anchorUntil = now + 0.15
+				hrp.Anchored = true
+			end
+		else
+			local dir   = hum.MoveDirection
+			local base  = math.max(hum.WalkSpeed, 16)
+			local keepY = vert > CFG.Misc.MaxSafeVel and 0 or v.Y
+			hrp.AssemblyLinearVelocity = Vector3.new(dir.X * base, keepY, dir.Z * base)
+		end
+	elseif now < flingUntil then
+		hrp.AssemblyLinearVelocity = Vector3.zero
+	end
+end
+
+local function miscTick()
+	local char = LP.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not (hum and hrp and hrp:IsA("BasePart")) then return end
+
+	if CFG.Misc.WalkSpeedOn and hum.WalkSpeed ~= CFG.Misc.WalkSpeed then
+		pcall(function() hum.WalkSpeed = CFG.Misc.WalkSpeed end)
+	end
+	if CFG.Misc.NoKnockback and not State.staff then
+		pcall(antiFlingTick, hum, hrp)
+	end
+end
+
+RunService.Heartbeat:Connect(function() pcall(miscTick) end)
+
+--============ AVISO DA PRÓXIMA HABILIDADE ============================
+local lastSeen = nil
+
+local function findNextAbilityValue()
+	local roots = {LP, LP.Character, LP:FindFirstChildOfClass("Backpack"), LP.PlayerGui}
+	for _, root in ipairs(roots) do
+		if root then
+			for k, v in pairs(root:GetAttributes()) do
+				local nm = string.lower(k)
+				if (type(v) == "string" and v ~= "" or type(v) == "number")
+					and (nm:find("next", 1, true) or nm:find("queued", 1, true)
+						or nm:find("pending", 1, true) or nm:find("roll", 1, true)
+						or nm:find("attack", 1, true) or nm:find("ability", 1, true)
+						or nm:find("skill", 1, true) or nm:find("spell", 1, true)) then
+					return tostring(v)
+				end
+			end
+			for _, d in ipairs(root:GetDescendants()) do
+				if d:IsA("StringValue") or d:IsA("ObjectValue") then
+					local nm = string.lower(d.Name)
+					if nm:find("next", 1, true) or nm:find("queued", 1, true)
+						or nm:find("pending", 1, true) or nm:find("roll", 1, true) then
+						local val = d:IsA("ObjectValue") and (d.Value and d.Value.Name or "-") or d.Value
+						return tostring(val)
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.25)
+		if CFG.Roll.AlertEnabled then
+			local ok, val = pcall(findNextAbilityValue)
+			if ok and val and val ~= "" and val ~= "-" and val ~= lastSeen then
+				lastSeen = val
+				State.nextAbility = val
+				State.rollAlert = true
+				if CFG.Roll.SoundAlert then
+					pcall(function()
+						local s = Instance.new("Sound")
+						s.SoundId = "rbxassetid://6042053626"
+						s.Volume = 1
+						s.Parent = PG
+						s:Play()
+						task.delay(2, function() s:Destroy() end)
+					end)
+				end
+				task.delay(CFG.Roll.NotifTime, function() State.rollAlert = false end)
+			end
+		end
+	end
+end)
+
+--========================== AIMBOT ===================================
+local EXCLUDE = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+local rp = RaycastParams.new()
+rp.FilterType, rp.IgnoreWater = EXCLUDE, true
+
+local function visible(cam, char, pos)
+	if not CFG.Aimbot.WallCheck then return true end
+	local f = {cam}
+	if LP.Character then f[#f + 1] = LP.Character end
+	if char then f[#f + 1] = char end
+	rp.FilterDescendantsInstances = f
+	return WS:Raycast(cam.CFrame.Position, pos - cam.CFrame.Position, rp) == nil
+end
+
+local function aimPartOf(char)
+	if not char then return nil end
+	local p = char:FindFirstChild(CFG.Aimbot.AimPart)
+	if p and p:IsA("BasePart") then return p end
+	for _, n in ipairs({"Head","UpperTorso","Torso","HumanoidRootPart"}) do
+		local q = char:FindFirstChild(n)
+		if q and q:IsA("BasePart") then return q end
+	end
+end
+
+local function targetFromPlayer(plr)
+	if not plr or not plr.Parent then return nil end
+	local char = plr.Character
+	local hum  = char and char:FindFirstChildOfClass("Humanoid")
+	if not (char and char.Parent and hum and hum.Health > 0) then return nil end
+	local part = aimPartOf(char)
+	if not part then return nil end
+	return {player = plr, part = part, char = char}
+end
+
+local function findTarget(cam)
+	local camPos, look = cam.CFrame.Position, cam.CFrame.LookVector
+	local best, bestDist = nil, math.huge
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP then
+			local t = targetFromPlayer(plr)
+			if t then
+				local pos, dist = t.part.Position, (t.part.Position - camPos).Magnitude
+				if dist <= CFG.Aimbot.MaxDistance and dist < bestDist and dist > 0.5 then
+					local angle = math.deg(math.acos(math.clamp(look:Dot((pos - camPos).Unit), -1, 1)))
+					if angle <= CFG.Aimbot.FOV * 0.5 and visible(cam, t.char, pos) then
+						best, bestDist = t, dist
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local LockCF, Applying, CamConn = nil, false, nil
+local function attachCamera(cam)
+	if CamConn then CamConn:Disconnect() end
+	if not cam then return end
+	CamConn = cam:GetPropertyChangedSignal("CFrame"):Connect(function()
+		if Applying or not LockCF or not State.aimActive then return end
+		Applying = true
+		pcall(function() cam.CFrame = LockCF end)
+		Applying = false
+	end)
+end
+attachCamera(WS.CurrentCamera)
+table.insert(State.conns, WS:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	attachCamera(WS.CurrentCamera)
+end))
+
+local BIND = "RNGScroll_Hub_Aim"
+local function aimStep(dt)
+	local cam = WS.CurrentCamera
+	if not cam then return end
+	local cfg = CFG.Aimbot
+	local engaged = (not cfg.RequireHold) or State.aimToggle or State.aimHeld
+	local active  = cfg.Enabled and engaged and not State.staff
+	State.aimActive = active
+
+	local char = LP.Character
+	local hum  = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+
+	if not active then
+		LockCF, State.lockedPlayer, State.targetName = nil, nil, "-"
+		if hum and hum.AutoRotate == false then hum.AutoRotate = true end
+		return
+	end
+
+	if cfg.ForceCamera and cam.CameraType == Enum.CameraType.Scriptable then
+		cam.CameraType = Enum.CameraType.Custom
+	end
+
+	local target
+	if cfg.StickyTarget and State.lockedPlayer then
+		local t = targetFromPlayer(State.lockedPlayer)
+		if t and (t.part.Position - cam.CFrame.Position).Magnitude <= cfg.StickyRange then
+			target = t
+		else
+			State.lockedPlayer = nil
+		end
+	end
+	if not target then
+		target = findTarget(cam)
+		if target then State.lockedPlayer = target.player end
+	end
+	if not target then
+		LockCF, State.targetName = nil, "-"
+		if hum and hum.AutoRotate == false then hum.AutoRotate = true end
+		return
+	end
+
+	State.lockedPlayer, State.targetName = target.player, target.player.Name
+	State.targetDist = math.floor((target.part.Position - cam.CFrame.Position).Magnitude)
+
+	local pt = target.part
+	local aimPos = pt.Position + pt.AssemblyLinearVelocity * cfg.Prediction
+	local camPos, dir = cam.CFrame.Position, aimPos - cam.CFrame.Position
+	if dir.Magnitude < 0.5 then return end
+
+	local desired = CFrame.lookAt(camPos, aimPos)
+	Applying = true
+	if cfg.HardLock or cfg.Smoothing <= 0 then
+		cam.CFrame = desired
+		LockCF = desired
+	else
+		local tau   = 0.02 + cfg.Smoothing * 0.45
+		local alpha = math.clamp(1 - math.exp(-dt / tau), 0.06, 1)
+		cam.CFrame  = cam.CFrame:Lerp(desired, alpha)
+		LockCF      = nil
+	end
+	Applying = false
+
+	if hum and hrp and hrp:IsA("BasePart") and not hrp.Anchored then
+		if cfg.FaceAim then
+			if hum.AutoRotate then hum.AutoRotate = false end
+			local p, tp = hrp.Position, pt.Position
+			local flat = Vector3.new(tp.X, p.Y, tp.Z)
+			if (flat - p).Magnitude > 0.2 then
+				pcall(function() hrp.CFrame = CFrame.lookAt(p, flat) end)
+			end
+			if cfg.StopOnAim then pcall(function() hum:Move(Vector3.new(), false) end) end
+		elseif hum.AutoRotate == false then
+			hum.AutoRotate = true
+		end
+	end
+end
+
+local function attachAimLoop()
+	pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+	RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, aimStep)
+end
+attachAimLoop()
+
+--==================== WATCHDOG =======================================
+task.spawn(function()
+	while true do
+		task.wait(1)
+		pcall(attachAimLoop)
+		local cam = WS.CurrentCamera
+		if cam and (not CamConn or not CamConn.Connected) then attachCamera(cam) end
+		local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+		if hum then
+			if not State.aimActive and hum.AutoRotate == false then hum.AutoRotate = true end
+			if CFG.Misc.WalkSpeedOn and hum.WalkSpeed ~= CFG.Misc.WalkSpeed then
+				pcall(function() hum.WalkSpeed = CFG.Misc.WalkSpeed end)
+			end
+		end
+		if State.lockedPlayer and not targetFromPlayer(State.lockedPlayer) then
+			State.lockedPlayer = nil
+		end
+	end
+end)
+
+--========================== ANTI-BAN =================================
+table.insert(State.conns, LP.Idled:Connect(function()
+	if CFG.AntiBan.Enabled and CFG.AntiBan.AntiAFK then
+		pcall(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new())
+		end)
+	end
+end))
+
+task.spawn(function()
+	while true do
+		task.wait(3)
+		if CFG.AntiBan.Enabled and CFG.AntiBan.StaffDetect then
+			local set, found = {}, nil
+			for _, n in ipairs(CFG.AntiBan.StaffList) do set[string.lower(n)] = true end
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= LP and (set[string.lower(p.Name)] or set[string.lower(p.DisplayName)]) then
+					found = p
+					break
+				end
+			end
+			State.staff = found
+		end
+	end
+end)
+
+table.insert(State.conns, Players.PlayerRemoving:Connect(function(p)
+	if p.Character then
+		for _, n in ipairs(ENEMY_PARTS) do
+			local part = p.Character:FindFirstChild(n)
+			if part and part:IsA("BasePart") then restorePart(part) end
+		end
+	end
+	if State.lockedPlayer == p then State.lockedPlayer = nil end
+end))
+
+--============================ PAINEL COM ABAS ========================
+local function mk(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props or {}) do o[k] = v end
+	if parent then o.Parent = parent end
+	return o
+end
+
+local gui = mk("ScreenGui", {
+	Name = "RNGScroll_UI", ResetOnSpawn = false, IgnoreGuiInset = true,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999,
+}, PG)
+
+local function makeDraggable(handle, target)
+	local dragInput, startMouse, startPos
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragInput, startMouse, startPos = input, input.Position, target.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then dragInput = nil end
+			end)
+		end
+	end)
+	handle.InputChanged:Connect(function(input)
+		if input == dragInput then
+			local d = input.Position - startMouse
+			target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+				startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+end
+
+local panel = mk("Frame", {
+	Size = UDim2.fromOffset(268, 430), Position = UDim2.new(0, 12, 0.5, -215),
+	BackgroundColor3 = CFG.UI.Bg, BorderSizePixel = 0,
+}, gui)
+mk("UICorner", {CornerRadius = UDim.new(0, 10)}, panel)
+mk("UIStroke", {Color = CFG.UI.Accent, Thickness = 1.5, Transparency = 0.25}, panel)
+
+local header = mk("TextButton", {
+	Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = CFG.UI.Header,
+	BorderSizePixel = 0, Text = "", AutoButtonColor = false,
+}, panel)
+mk("UICorner", {CornerRadius = UDim.new(0, 10)}, header)
+mk("TextLabel", {
+	Size = UDim2.new(1, -70, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+	BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 12,
+	TextColor3 = CFG.UI.Accent, TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "RNG SCROLL HUB v6.1",
+}, header)
+local minBtn = mk("TextButton", {
+	Size = UDim2.fromOffset(26, 26), Position = UDim2.new(1, -58, 0.5, -13),
+	BackgroundColor3 = Color3.fromRGB(45, 12, 16), BorderSizePixel = 0,
+	Text = "—", Font = Enum.Font.GothamBold, TextSize = 14,
+	TextColor3 = CFG.UI.Text, AutoButtonColor = false,
+}, header)
+mk("UICorner", {CornerRadius = UDim.new(0, 6)}, minBtn)
+local offBtn = mk("TextButton", {
+	Size = UDim2.fromOffset(26, 26), Position = UDim2.new(1, -30, 0.5, -13),
+	BackgroundColor3 = Color3.fromRGB(60, 10, 14), BorderSizePixel = 0,
+	Text = "X", Font = Enum.Font.GothamBold, TextSize = 11,
+	TextColor3 = CFG.UI.Text, AutoButtonColor = false,
+}, header)
+mk("UICorner", {CornerRadius = UDim.new(0, 6)}, offBtn)
+
+-- barra de abas
+local tabs = {"MAIN", "AIMBOT", "HITBOX", "MOVE", "ROLÊ"}
+local tabBar = mk("Frame", {
+	Size = UDim2.new(1, -14, 0, 26), Position = UDim2.new(0, 7, 0, 36),
+	BackgroundTransparency = 1,
+}, panel)
+mk("UIListLayout", {Padding = UDim.new(0, 3), FillDirection = Enum.FillDirection.Horizontal}, tabBar)
+
+local pageHolder = mk("Frame", {
+	Size = UDim2.new(1, -14, 1, -104), Position = UDim2.new(0, 7, 0, 66),
+	BackgroundTransparency = 1,
+}, panel)
+
+local pages, tabButtons = {}, {}
+local currentTab = "MAIN"
+
+for i, name in ipairs(tabs) do
+	local b = mk("TextButton", {
+		Size = UDim2.new(0.2, -3, 1, 0),
+		BackgroundColor3 = CFG.UI.Row, BorderSizePixel = 0,
+		Text = name, Font = Enum.Font.GothamBold, TextSize = 9,
+		TextColor3 = CFG.UI.TextDim, AutoButtonColor = false, LayoutOrder = i,
+	}, tabBar)
+	mk("UICorner", {CornerRadius = UDim.new(0, 6)}, b)
+	tabButtons[name] = b
+
+	local page = mk("ScrollingFrame", {
+		Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+		BorderSizePixel = 0, ScrollBarThickness = 3,
+		ScrollBarImageColor3 = CFG.UI.Accent, Visible = false,
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, pageHolder)
+	mk("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, page)
+	pages[name] = page
+end
+
+local function selectTab(name)
+	currentTab = name
+	for n, pg in pairs(pages) do pg.Visible = (n == name) end
+	for n, b in pairs(tabButtons) do
+		local on = (n == name)
+		b.BackgroundColor3 = on and CFG.UI.Header or CFG.UI.Row
+		b.TextColor3 = on and CFG.UI.Accent or CFG.UI.TextDim
+	end
+end
+
+for _, name in ipairs(tabs) do
+	tabButtons[name].MouseButton1Click:Connect(function() selectTab(name) end)
+end
+selectTab("MAIN")
+
+local UI = {}
+UI.ability = mk("TextLabel", {
+	Size = UDim2.new(1, -14, 0, 16), Position = UDim2.new(0, 7, 1, -54),
+	BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 10,
+	TextColor3 = CFG.UI.Accent, TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "próx. habilidade: -",
+}, panel)
+UI.target = mk("TextLabel", {
+	Size = UDim2.new(1, -14, 0, 16), Position = UDim2.new(0, 7, 1, -38),
+	BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
+	TextColor3 = Color3.fromRGB(255, 190, 190), TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "alvo travado: -",
+}, panel)
+UI.status = mk("TextLabel", {
+	Size = UDim2.new(1, -14, 0, 16), Position = UDim2.new(0, 7, 1, -22),
+	BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
+	TextColor3 = CFG.UI.TextDim, TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "status: ativo",
+}, panel)
+
+local rowCounters = {}
+local function row(pageName, height)
+	rowCounters[pageName] = (rowCounters[pageName] or 0) + 1
+	local r = mk("Frame", {
+		Size = UDim2.new(1, -6, 0, height or 32),
+		BackgroundColor3 = CFG.UI.Row, BorderSizePixel = 0,
+		LayoutOrder = rowCounters[pageName],
+	}, pages[pageName])
+	mk("UICorner", {CornerRadius = UDim.new(0, 6)}, r)
+	return r
+end
+
+local function addToggle(pageName, text, get, set)
+	local r = row(pageName)
+	mk("TextLabel", {
+		Size = UDim2.new(1, -62, 1, 0), Position = UDim2.new(0, 10, 0, 0),
+		BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 12,
+		TextColor3 = CFG.UI.Text, TextXAlignment = Enum.TextXAlignment.Left, Text = text,
+	}, r)
+	local mark = mk("Frame", {
+		Size = UDim2.fromOffset(3, 20), Position = UDim2.new(0, 0, 0.5, -10),
+		BackgroundColor3 = CFG.UI.Accent, BorderSizePixel = 0, Visible = get(),
+	}, r)
+	mk("UICorner", {CornerRadius = UDim.new(1, 0)}, mark)
+	local btn = mk("TextButton", {
+		Size = UDim2.fromOffset(40, 18), Position = UDim2.new(1, -50, 0.5, -9),
+		BackgroundColor3 = get() and CFG.UI.Accent or Color3.fromRGB(45, 42, 44),
+		BorderSizePixel = 0, Text = "", AutoButtonColor = false,
+	}, r)
+	mk("UICorner", {CornerRadius = UDim.new(1, 0)}, btn)
+	local knob = mk("Frame", {
+		Size = UDim2.fromOffset(14, 14), BackgroundColor3 = Color3.fromRGB(245, 240, 240),
+		BorderSizePixel = 0,
+		Position = get() and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7),
+	}, btn)
+	mk("UICorner", {CornerRadius = UDim.new(1, 0)}, knob)
+	btn.MouseButton1Click:Connect(function()
+		set(not get())
+		local on = get()
+		mark.Visible = on
+		btn.BackgroundColor3 = on and CFG.UI.Accent or Color3.fromRGB(45, 42, 44)
+		knob:TweenPosition(on and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7),
+			Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.1, true)
+	end)
+end
+
+local function addStepper(pageName, text, get, set, step, minv, maxv, fmt)
+	local r = row(pageName)
+	mk("TextLabel", {
+		Size = UDim2.new(1, -158, 1, 0), Position = UDim2.new(0, 10, 0, 0),
+		BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 12,
+		TextColor3 = CFG.UI.Text, TextXAlignment = Enum.TextXAlignment.Left, Text = text,
+	}, r)
+	local val = mk("TextLabel", {
+		Size = UDim2.fromOffset(50, 22), Position = UDim2.new(1, -106, 0.5, -11),
+		BackgroundColor3 = Color3.fromRGB(32, 12, 14), BorderSizePixel = 0,
+		Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = CFG.UI.Text, Text = fmt(get()),
+	}, r)
+	mk("UICorner", {CornerRadius = UDim.new(0, 5)}, val)
+	local function btn(sym, x)
+		local b = mk("TextButton", {
+			Size = UDim2.fromOffset(24, 24), Position = UDim2.new(1, x, 0.5, -12),
+			BackgroundColor3 = Color3.fromRGB(52, 16, 20), BorderSizePixel = 0,
+			Text = sym, Font = Enum.Font.GothamBold, TextSize = 14,
+			TextColor3 = CFG.UI.Text, AutoButtonColor = false,
+		}, r)
+		mk("UICorner", {CornerRadius = UDim.new(0, 5)}, b)
+		return b
+	end
+	local function upd(v)
+		v = math.floor(math.clamp(v, minv, maxv) * 100 + 0.5) / 100
+		set(v)
+		val.Text = fmt(v)
+	end
+	btn("-", -52).MouseButton1Click:Connect(function() upd(get() - step) end)
+	btn("+", -26).MouseButton1Click:Connect(function() upd(get() + step) end)
+end
+
+local function addInfo(pageName, text)
+	local r = row(pageName, 40)
+	mk("TextLabel", {
+		Size = UDim2.new(1, -20, 1, 0), Position = UDim2.new(0, 10, 0, 0),
+		BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
+		TextColor3 = CFG.UI.TextDim, TextXAlignment = Enum.TextXAlignment.Left,
+		TextWrapped = true, Text = text,
+	}, r)
+end
+
+-- ---- MAIN ----
+addToggle("MAIN", "Aimbot", function() return CFG.Aimbot.Enabled end,
+	function(v) CFG.Aimbot.Enabled = v end)
+addToggle("MAIN", "Hard lock (grudada)", function() return CFG.Aimbot.HardLock end,
+	function(v) CFG.Aimbot.HardLock = v end)
+addToggle("MAIN", "Travar alvo até morrer", function() return CFG.Aimbot.StickyTarget end,
+	function(v) CFG.Aimbot.StickyTarget = v if not v then State.lockedPlayer = nil end end)
+addToggle("MAIN", "Hitbox inimigos", function() return CFG.Hitbox.Targets end,
+	function(v) CFG.Hitbox.Targets = v end)
+addToggle("MAIN", "WalkSpeed", function() return CFG.Misc.WalkSpeedOn end,
+	function(v)
+		CFG.Misc.WalkSpeedOn = v
+		local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+		if hum then pcall(function() hum.WalkSpeed = v and CFG.Misc.WalkSpeed or 16 end) end
+	end)
+addToggle("MAIN", "Sem knockback", function() return CFG.Misc.NoKnockback end,
+	function(v)
+		CFG.Misc.NoKnockback = v
+		flingUntil, anchorUntil = 0, 0
+		local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if hrp and not v then hrp.Anchored = false end
+	end)
+addToggle("MAIN", "Aviso da próxima skill", function() return CFG.Roll.AlertEnabled end,
+	function(v) CFG.Roll.AlertEnabled = v end)
+addToggle("MAIN", "Anti-ban", function() return CFG.AntiBan.Enabled end,
+	function(v) CFG.AntiBan.Enabled = v end)
+
+do
+	local b = mk("TextButton", {
+		Size = UDim2.new(1, -6, 0, 28), BackgroundColor3 = Color3.fromRGB(70, 12, 16),
+		BorderSizePixel = 0, Text = "Descarregar",
+		Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = CFG.UI.Text,
+		AutoButtonColor = false, LayoutOrder = 99,
+	}, pages.MAIN)
+	mk("UICorner", {CornerRadius = UDim.new(0, 6)}, b)
+	b.MouseButton1Click:Connect(function()
+		if _G.RNGScrollUnload then _G.RNGScrollUnload() end
+	end)
+end
+
+-- ---- AIMBOT ----
+addToggle("AIMBOT", "Personagem segue a mira", function() return CFG.Aimbot.FaceAim end,
+	function(v) CFG.Aimbot.FaceAim = v end)
+addToggle("AIMBOT", "Parar movimento ao mirar", function() return CFG.Aimbot.StopOnAim end,
+	function(v) CFG.Aimbot.StopOnAim = v end)
+addToggle("AIMBOT", "Só mirar com AIM ativo", function() return CFG.Aimbot.RequireHold end,
+	function(v) CFG.Aimbot.RequireHold = v end)
+addToggle("AIMBOT", "Mirar através de parede", function() return not CFG.Aimbot.WallCheck end,
+	function(v) CFG.Aimbot.WallCheck = not v end)
+addToggle("AIMBOT", "Auto atacar", function() return CFG.Aimbot.AutoShoot end,
+	function(v) CFG.Aimbot.AutoShoot = v end)
+addStepper("AIMBOT", "FOV", function() return CFG.Aimbot.FOV end,
+	function(v) CFG.Aimbot.FOV = v end, 10, 10, 360, function(v) return math.floor(v) .. "°" end)
+addStepper("AIMBOT", "Distância", function() return CFG.Aimbot.MaxDistance end,
+	function(v) CFG.Aimbot.MaxDistance = v end, 25, 50, 2000, function(v) return math.floor(v) .. "st" end)
+addStepper("AIMBOT", "Suavização", function() return CFG.Aimbot.Smoothing end,
+	function(v) CFG.Aimbot.Smoothing = v end, 0.1, 0, 0.9, function(v) return string.format("%.1f", v) end)
+addStepper("AIMBOT", "Predição", function() return CFG.Aimbot.Prediction end,
+	function(v) CFG.Aimbot.Prediction = v end, 0.02, 0, 0.5, function(v) return string.format("%.2f", v) end)
+
+-- ---- HITBOX ----
+addToggle("HITBOX", "Hitbox inimigos", function() return CFG.Hitbox.Targets end,
+	function(v) CFG.Hitbox.Targets = v end)
+addToggle("HITBOX", "Hitbox própria", function() return CFG.Hitbox.Self end,
+	function(v) CFG.Hitbox.Self = v end)
+addToggle("HITBOX", "Só ao mirar", function() return CFG.Hitbox.OnlyWhenAiming end,
+	function(v) CFG.Hitbox.OnlyWhenAiming = v end)
+addStepper("HITBOX", "Escala", function() return CFG.Hitbox.Scale end,
+	function(v) CFG.Hitbox.Scale = v end, 0.5, 1, 8, function(v) return string.format("%.1fx", v) end)
+
+-- ---- MOVE ----
+addStepper("MOVE", "Velocidade", function() return CFG.Misc.WalkSpeed end,
+	function(v)
+		CFG.Misc.WalkSpeed = v
+		if CFG.Misc.WalkSpeedOn then
+			local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum.WalkSpeed = v end) end
+		end
+	end, 5, 16, 400, function(v) return math.floor(v) end)
+addToggle("MOVE", "Sem knockback", function() return CFG.Misc.NoKnockback end,
+	function(v)
+		CFG.Misc.NoKnockback = v
+		flingUntil, anchorUntil = 0, 0
+		local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if hrp and not v then hrp.Anchored = false end
+	end)
+addToggle("MOVE", "Anti-fling duro", function() return CFG.Misc.HardAntiFling end,
+	function(v) CFG.Misc.HardAntiFling = v end)
+addToggle("MOVE", "Ancorar em fling", function() return CFG.Misc.AnchorOnFling end,
+	function(v) CFG.Misc.AnchorOnFling = v end)
+addStepper("MOVE", "Veloc. segura", function() return CFG.Misc.MaxSafeVel end,
+	function(v) CFG.Misc.MaxSafeVel = v end, 10, 30, 500, function(v) return math.floor(v) end)
+addInfo("MOVE", "Anti-fling duro zera a velocidade por 2 frames e ancora 0.15s em flings fortes. Se travar sem conseguir andar depois de um empurrão, desligue e ligue 'Sem knockback' para resetar.")
+
+-- ---- ROLÊ ----
+addToggle("ROLÊ", "Aviso da próxima skill", function() return CFG.Roll.AlertEnabled end,
+	function(v) CFG.Roll.AlertEnabled = v end)
+addToggle("ROLÊ", "Som no alerta", function() return CFG.Roll.SoundAlert end,
+	function(v) CFG.Roll.SoundAlert = v end)
+addStepper("ROLÊ", "Tempo notificação", function() return CFG.Roll.NotifTime end,
+	function(v) CFG.Roll.NotifTime = v end, 1, 1, 15, function(v) return math.floor(v) .. "s" end)
+addInfo("ROLÊ", "O sorteio acontece no servidor: ninguém vê o resultado antes dele chegar. Este sistema detecta a skill no instante em que ela é replicada (antes da animação) e avisa com som + destaque no painel.")
+
+-- ícone minimizado
+local icon = mk("TextButton", {
+	Size = UDim2.fromOffset(56, 56), Position = UDim2.new(0, 12, 0.5, -28),
+	BackgroundColor3 = CFG.UI.Header, BorderSizePixel = 0,
+	Text = "RNG", Font = Enum.Font.GothamBold, TextSize = 12,
+	TextColor3 = CFG.UI.Accent, AutoButtonColor = false, Visible = false,
+}, gui)
+mk("UICorner", {CornerRadius = UDim.new(1, 0)}, icon)
+mk("UIStroke", {Color = CFG.UI.Accent, Thickness = 1.5, Transparency = 0.2}, icon)
+makeDraggable(icon, icon)
+makeDraggable(header, panel)
+
+-- ===== botão AIM arrastável =====
+local aimBtn = mk("TextButton", {
+	Size = UDim2.fromOffset(74, 74), Position = UDim2.new(1, -90, 1, -150),
+	BackgroundColor3 = Color3.fromRGB(20, 10, 12), BorderSizePixel = 0,
+	Text = "AIM", Font = Enum.Font.GothamBold, TextSize = 13,
+	TextColor3 = CFG.UI.Accent, AutoButtonColor = false, Visible = IS_TOUCH,
+}, gui)
+mk("UICorner", {CornerRadius = UDim.new(1, 0)}, aimBtn)
+mk("UIStroke", {Color = CFG.UI.Accent, Thickness = 2, Transparency = 0.25}, aimBtn)
+
+local function paintAim()
+	local on = State.aimToggle or State.aimHeld
+	aimBtn.BackgroundColor3 = on and CFG.UI.Accent or Color3.fromRGB(20, 10, 12)
+	aimBtn.TextColor3 = on and Color3.fromRGB(15, 5, 6) or CFG.UI.Accent
+end
+
+do
+	local pressAt, moved = 0, false
+	aimBtn.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch
+			or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			pressAt, moved = os.clock(), false
+			State.aimHeld = true
+			paintAim()
+			i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then
+					State.aimHeld = false
+					if not moved and os.clock() - pressAt < 0.25 then
+						State.aimToggle = not State.aimToggle
+					end
+					paintAim()
+				end
+			end)
+		end
+	end)
+	aimBtn.InputChanged:Connect(function(i)
+		if (i.UserInputType == Enum.UserInputType.Touch
+			or i.UserInputType == Enum.UserInputType.MouseMovement)
+			and math.abs(i.Delta.X) + math.abs(i.Delta.Y) > 6 then
+			moved = true
+		end
+	end)
+	makeDraggable(aimBtn, aimBtn)
+end
+
+local function setOpen(v)
+	panel.Visible = v
+	icon.Visible  = not v
+end
+minBtn.MouseButton1Click:Connect(function() setOpen(false) end)
+offBtn.MouseButton1Click:Connect(function() setOpen(false) end)
+icon.MouseButton1Click:Connect(function() setOpen(true) end)
+
+table.insert(State.conns, UIS.InputBegan:Connect(function(i)
+	if UIS:GetFocusedTextBox() then return end
+	if i.KeyCode == Enum.KeyCode[CFG.Aimbot.HoldKey] then
+		State.aimHeld = true paintAim()
+	elseif i.KeyCode == Enum.KeyCode[CFG.Aimbot.ToggleKey] then
+		State.aimToggle = not State.aimToggle paintAim()
+	elseif i.KeyCode == Enum.KeyCode.RightShift then
+		setOpen(not panel.Visible)
+	end
+end))
+table.insert(State.conns, UIS.InputEnded:Connect(function(i)
+	if i.KeyCode == Enum.KeyCode[CFG.Aimbot.HoldKey] then
+		State.aimHeld = false paintAim()
+	end
+end))
+
+task.spawn(function()
+	while true do
+		task.wait(0.2)
+		if UI.status and UI.status.Parent then
+			local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+			local s = State.staff and ("staff: " .. State.staff.Name) or "ativo"
+			UI.status.Text = "status: " .. s
+				.. " | aim:" .. (State.aimActive and "ON" or "off")
+				.. " | ws:" .. (hum and math.floor(hum.WalkSpeed) or 0)
+			UI.target.Text = "alvo travado: " .. State.targetName
+				.. (State.targetName ~= "-" and (" (" .. State.targetDist .. "st)") or "")
+			UI.ability.Text = State.rollAlert and (">>> PRÓXIMA: " .. State.nextAbility .. " <<<")
+				or ("próx. habilidade: " .. State.nextAbility)
+			UI.ability.TextColor3 = State.rollAlert and CFG.UI.Text or CFG.UI.Accent
+		end
+	end
+end)
+
+local function unload()
+	pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+	if CamConn then CamConn:Disconnect() end
+	for _, c in ipairs(State.conns) do pcall(function() c:Disconnect() end) end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character then
+			for _, n in ipairs(ENEMY_PARTS) do
+				local part = p.Character:FindFirstChild(n)
+				if part and part:IsA("BasePart") then restorePart(part) end
+			end
+		end
+	end
+	local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+	if hrp then hrp.Anchored = false end
+	local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.AutoRotate = true end
+	gui:Destroy()
+	_G.RNGScrollUnload = nil
+end
+_G.RNGScrollUnload = unload
+
+print("[RNG Scroll v6.1] abas OK | AIM arrastável | anti-fling 3 camadas | alerta de skill")</textarea>
   </div>
 </main>
 
