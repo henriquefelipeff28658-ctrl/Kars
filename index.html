@@ -1,0 +1,77 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ULTRON SCRIPTS</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #080808;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+header {
+  padding: 25px;
+  text-align: center;
+  border-bottom: 1px solid #a00000;
+}
+h1 { color: #ff2525; letter-spacing: 3px; }
+main { padding: 25px; max-width: 600px; margin: auto; }
+.card {
+  background: #151515;
+  border: 1px solid #9d1717;
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 25px;
+}
+button {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 8px;
+  background: #d71919;
+  color: white;
+  font-weight: bold;
+  font-size: 16px;
+}
+footer {
+  text-align: center;
+  color: #777;
+  padding: 30px;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>ULTRON SCRIPTS</h1>
+  <p>Central de projetos Lua</p>
+</header>
+
+<main>
+  <h2>Projetos disponíveis</h2>
+
+  <div class="card">
+    <h3>Projeto Lua #01</h3>
+    <p>Projeto de programação Lua.</p>
+    <button onclick="copiar()">COPIAR CÓDIGO</button>
+    <textarea id="codigo" hidden>-- Insira aqui seu código Lua legítimo</textarea>
+  </div>
+</main>
+
+<footer>
+  ULTRON SCRIPTS © 2026
+</footer>
+
+<script>
+function copiar() {
+  const codigo = document.getElementById("codigo").value;
+  navigator.clipboard.writeText(codigo)
+    .then(() => alert("Código copiado!"))
+    .catch(() => alert("Não foi possível copiar."));
+}
+</script>
+</body>
+</html>
